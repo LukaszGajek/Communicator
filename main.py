@@ -6,6 +6,9 @@ from cryptography.hazmat.primitives import hashes,serialization
 import base64
 from enum import StrEnum
 import threading
+import queue
+from prompt_toolkit import PromptSession
+from prompt_toolkit.patch_stdout import patch_stdout
 
 class Role(StrEnum):
     HOST = 'host'
@@ -13,7 +16,7 @@ class Role(StrEnum):
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("-r", "--role", choices=Role, required=True, help = "host or a client")
+parser.add_argument("-r", "--role", choices=Role, default = "host", help = "host or a client")
 parser.add_argument("-p", "--port", default = 8001, help = "select a port to connect to")
 parser.add_argument("-a", "--address", default="127.0.0.1", help = "select ip adress to connect to")
 parser.add_argument("-pub", "--own_public_key", default="public_key.pem", help = "path to your public key")
@@ -78,8 +81,8 @@ def exchange_keys(c, pub_pem_bytes):
     return client_public
 
 
-def send_text(s, pub_key, label):
-    text = input(f"{label}: ")
+def send_text(s, pub_key, label, session):
+    text = session.prompt(f"{label}:")
     message = text.encode("utf-8")
     
     if message == "quit":
@@ -92,21 +95,33 @@ def send_text(s, pub_key, label):
     s.send(encrypted_b64)
 
 
-def rcv_text(s, private_key, label):
+def rcv_text(s, private_key, label, messages: queue.Queue):
     length_bytes = s.recv(4)
     length = int.from_bytes(length_bytes,"big")
     encrypted_b64 = s.recv(length)
     decrypted = decrypt(private_key, encrypted_b64)
-    print(f"{label}: ", decrypted.decode("utf-8"))
+    messages.put(decrypted.decode("utf-8"))
 
 
-def receive_loop(s, private_key, friend_label):
+def receive_loop(s, private_key, friend_label, messages: queue.Queue):
     while True:
-        rcv_text(s, private_key, friend_label)
+        rcv_text(s, private_key, friend_label, messages)
 
-def send_loop(s, public_key, my_label):
+def send_loop(s, public_key, my_label, session):
+    with patch_stdout():
+        while True:
+            send_text(s, public_key, my_label, session)
+        
+def print_loop(messages: queue.Queue, label):
     while True:
-        send_text(s, public_key, my_label)
+        try:
+            text = messages.get_nowait()
+            print(f"{label}:", text)
+        except queue.Empty:
+            pass
+            
+session = PromptSession()
+messages = queue.Queue()
 
 if args.role == Role.HOST:
     s = socket.socket()
@@ -121,13 +136,16 @@ if args.role == Role.HOST:
     
     client_public = exchange_keys(c, pub_pem_bytes)
     
-    rcv_task = threading.Thread(target=receive_loop, args=(c, private_key, "Client"))
-    send_task = threading.Thread(target=send_loop, args=(c, client_public, "Host"))
+    rcv_task = threading.Thread(target=receive_loop, args=(c, private_key, "Client", messages))
+    send_task = threading.Thread(target=send_loop, args=(c, client_public, "Host", session))
+    print_task  = threading.Thread(target=print_loop, args=(messages, "Client"))
     rcv_task.start()
     send_task.start()
+    print_task.start()
 
     rcv_task.join()
     send_task.join()
+    print_task.join()
 
 elif args.role == Role.CLIENT:
     port = int(args.port)
@@ -137,13 +155,16 @@ elif args.role == Role.CLIENT:
 
         host_public = exchange_keys(s, pub_pem_bytes)
         
-        rcv_task = threading.Thread(target=receive_loop, args=(s, private_key, "Host"))
-        send_task = threading.Thread(target=send_loop, args=(s, host_public, "Client"))
+        rcv_task = threading.Thread(target=receive_loop, args=(s, private_key, "Host", messages))
+        send_task = threading.Thread(target=send_loop, args=(s, host_public, "Client", session))
+        print_task  = threading.Thread(target=print_loop, args=(messages, "Host"))
         rcv_task.start()
         send_task.start()
+        print_task.start()
 
         rcv_task.join()
         send_task.join()
+        print_task.join()
             
             
             
