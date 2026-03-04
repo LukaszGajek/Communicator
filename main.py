@@ -14,6 +14,10 @@ class Role(StrEnum):
     HOST = 'host'
     CLIENT = 'client'
 
+# Chcielibysmy miec obsluge wylaczenia programu w latwy sposob - jak?
+# Trzeba dodac ograniczenie na liczbe bajtow w wiadomosci - ?
+# Trzeba tez fixnac Address already in use - jak?
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-r", "--role", choices=Role, default = "host", help = "host or a client")
@@ -133,6 +137,7 @@ def send_loop(s, public_key, my_label, session):
                 break
         
 def print_loop(messages: queue.Queue, label):
+# Dobrze by bylo tutaj sleepa zrobic bo sie kreci w kolko, albo zrobic get_wait() nawet bez try-except 
     global program_exited
     while True:
         if program_exited:
