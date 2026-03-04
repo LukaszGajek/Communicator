@@ -35,6 +35,9 @@ with open(args.own_private_key, "rb") as f:
 
 pub_pem_bytes = public_key.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
 
+program_exited = False
+session = PromptSession()
+messages = queue.Queue()
 
 def encrypt(pub_key, data): 
      encrypted = pub_key.encrypt(
@@ -82,49 +85,67 @@ def exchange_keys(c, pub_pem_bytes):
 
 
 def send_text(s, pub_key, label, session):
-    text = session.prompt(f"{label}:")
-    message = text.encode("utf-8")
+    try:
+        text = session.prompt(f"{label}: ")
     
-    if message == "quit":
-        s.send("user disconnected".encode())
-        s.close()
-        exit(0)
-    
-    encrypted_b64 = encrypt(pub_key, message)
-    s.send(len(encrypted_b64).to_bytes(4,"big"))
-    s.send(encrypted_b64)
+        message = text.encode("utf-8")
+        encrypted_b64 = encrypt(pub_key, message)
+        s.send(len(encrypted_b64).to_bytes(4,"big"))
+        s.send(encrypted_b64)
+        if text == "quit":
+            return True
+    except:
+        return True
+    return False
+        
+
+def rcv_text(s, private_key, messages: queue.Queue):
+    try :
+        length_bytes = s.recv(4)
+        length = int.from_bytes(length_bytes,"big")
+        encrypted_b64 = s.recv(length)
+        decrypted = decrypt(private_key, encrypted_b64).decode('utf-8')
+        if decrypted == 'quit':
+            return True
+        messages.put(decrypted)
+    except:
+        pass
+    return False
 
 
-def rcv_text(s, private_key, label, messages: queue.Queue):
-    length_bytes = s.recv(4)
-    length = int.from_bytes(length_bytes,"big")
-    encrypted_b64 = s.recv(length)
-    decrypted = decrypt(private_key, encrypted_b64)
-    messages.put(decrypted.decode("utf-8"))
-
-
-def receive_loop(s, private_key, friend_label, messages: queue.Queue):
+def receive_loop(s, private_key, messages: queue.Queue):
+    global program_exited, session
     while True:
-        rcv_text(s, private_key, friend_label, messages)
+        exited = rcv_text(s, private_key, messages)
+        if exited or program_exited:
+            program_exited = True
+            if session.app.is_running:
+                session.app.exit()
+            break
 
 def send_loop(s, public_key, my_label, session):
+    global program_exited 
     with patch_stdout():
-        while True:
-            send_text(s, public_key, my_label, session)
+        while True: 
+            exited = send_text(s, public_key, my_label, session)
+            if exited or program_exited:
+                program_exited = True
+                break
         
 def print_loop(messages: queue.Queue, label):
+    global program_exited
     while True:
+        if program_exited:
+            break
         try:
             text = messages.get_nowait()
-            print(f"{label}:", text)
+            print(f"{label}: ", text)
         except queue.Empty:
             pass
             
-session = PromptSession()
-messages = queue.Queue()
-
 if args.role == Role.HOST:
     s = socket.socket()
+    
     print('socket created')
     port = int(args.port)
     s.bind(('', port))
@@ -133,10 +154,11 @@ if args.role == Role.HOST:
     print('listening')
     c, addr = s.accept()
     print(f"{addr} connected")
+    c.settimeout(0.5)
     
     client_public = exchange_keys(c, pub_pem_bytes)
     
-    rcv_task = threading.Thread(target=receive_loop, args=(c, private_key, "Client", messages))
+    rcv_task = threading.Thread(target=receive_loop, args=(c, private_key, messages))
     send_task = threading.Thread(target=send_loop, args=(c, client_public, "Host", session))
     print_task  = threading.Thread(target=print_loop, args=(messages, "Client"))
     rcv_task.start()
@@ -146,16 +168,18 @@ if args.role == Role.HOST:
     rcv_task.join()
     send_task.join()
     print_task.join()
+    c.close()
 
 elif args.role == Role.CLIENT:
     port = int(args.port)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
         s.connect((args.address, port))
         print(f"connected to: {args.address}")
 
         host_public = exchange_keys(s, pub_pem_bytes)
         
-        rcv_task = threading.Thread(target=receive_loop, args=(s, private_key, "Host", messages))
+        rcv_task = threading.Thread(target=receive_loop, args=(s, private_key, messages))
         send_task = threading.Thread(target=send_loop, args=(s, host_public, "Client", session))
         print_task  = threading.Thread(target=print_loop, args=(messages, "Host"))
         rcv_task.start()
@@ -165,6 +189,10 @@ elif args.role == Role.CLIENT:
         rcv_task.join()
         send_task.join()
         print_task.join()
+        s.close()
+        
+
+exit(0)
             
             
             
