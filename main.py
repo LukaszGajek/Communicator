@@ -105,13 +105,14 @@ def send_text(s, pub_key, label, session):
 
 def rcv_text(s, private_key, messages: queue.Queue):
     try :
-        length_bytes = s.recv(4)
-        length = int.from_bytes(length_bytes,"big")
-        encrypted_b64 = s.recv(length)
-        decrypted = decrypt(private_key, encrypted_b64).decode('utf-8')
-        if decrypted == 'quit':
-            return True
-        messages.put(decrypted)
+        while True:
+            length_bytes = s.recv(4)
+            length = int.from_bytes(length_bytes,"big")
+            encrypted_b64 = s.recv(length)
+            decrypted = decrypt(private_key, encrypted_b64).decode('utf-8')
+            if decrypted == 'quit':
+                return True
+            messages.put(decrypted)
     except:
         pass
     return False
